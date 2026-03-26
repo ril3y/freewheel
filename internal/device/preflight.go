@@ -134,35 +134,11 @@ func PreflightCheck(ip string, log Logger) bool {
 		}
 	}
 
-	// --- Platform signing key verification ---
-	log.Info("  Platform Key Check:")
-	expectedKeySHA1 := "41791c9b8faf15e1acd5aaf59210fd42467d8277"
-
-	certPkg := "com.nautilus.nautiluslauncher"
-	if launcherVersion == "not installed" {
-		certPkg = "com.nautilus.bowflex.usb"
-	}
-	conn, err = connect()
-	if err != nil {
-		log.Error(fmt.Sprintf("  Connection failed: %v", err))
-		return false
-	}
-	certRaw, _ := conn.Shell(fmt.Sprintf(
-		"dumpsys package %s 2>/dev/null | grep -iE 'signatures=|cert|sign|sha1' | head -10",
-		certPkg))
-	conn.Close()
-
+	// --- Platform signing key ---
+	log.Info("  Platform Key:")
 	keyMatch := false
-	certDump := strings.ToLower(strings.TrimSpace(certRaw))
-	if strings.Contains(certDump, expectedKeySHA1) {
-		keyMatch = true
-		log.Success(fmt.Sprintf("    Platform key: MATCH (SHA-1: %s...)", expectedKeySHA1[:16]))
-	} else {
-		log.Dim(fmt.Sprintf("    Cert dump from %s: %.200s", certPkg, strings.TrimSpace(certRaw)))
-		log.Warn("    Could not verify platform key via package dump")
-		log.Dim("    Will verify during SerialBridge install (platform-signed APK)")
-		log.Dim(fmt.Sprintf("    Expected SHA-1: %s", expectedKeySHA1))
-	}
+	log.Dim("    Platform key will be verified when SerialBridge installs")
+	log.Dim("    (SerialBridge is platform-signed — install fails if key doesn't match)")
 
 	// --- Compatibility verdict ---
 	log.Info("")
