@@ -107,16 +107,33 @@ func RunJailbreak(ip string, log Logger) {
 	log.Success(fmt.Sprintf("  %s", idStr))
 	conn.Close()
 
-	// Pre-flight already passed (enforced by UI). From here we modify the device.
-	// If anything fails, auto-restore to stock.
+	// Check if already jailbroken — if so, this is an update, not a fresh jailbreak
+	conn, err = connect()
+	isUpdate := false
+	if err == nil {
+		pkgCheck, _ := conn.Shell("pm list packages 2>/dev/null | grep -E 'freewheel.launcher|freewheel.bridge'")
+		conn.Close()
+		isUpdate = strings.Contains(pkgCheck, "freewheel.launcher")
+		if isUpdate {
+			log.Info("  Already jailbroken — running as UPDATE (will reinstall APKs)")
+		}
+	}
+
+	// If anything fails on a fresh jailbreak, auto-restore to stock.
+	// On an update, don't auto-restore (the device is already in a working state).
 	failed := false
 	defer func() {
-		if failed {
+		if failed && !isUpdate {
 			log.Step("")
 			log.Error("=== JAILBREAK FAILED — RESTORING STOCK ===")
 			log.Warn("  A step failed. Automatically restoring bike to stock state...")
 			log.Info("")
 			RunRestore(ip, log)
+		} else if failed && isUpdate {
+			log.Step("")
+			log.Warn("=== UPDATE HAD ERRORS ===")
+			log.Warn("  Some steps failed but device was already jailbroken.")
+			log.Warn("  The bike should still work. Check the log above for details.")
 		}
 	}()
 
