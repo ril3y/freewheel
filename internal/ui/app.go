@@ -21,7 +21,7 @@ import (
 )
 
 // Run creates and runs the FreeWheel application. version and gitHash are
-// stamped in at build time (see .github/workflows/build.yml).
+// stamped in at build time (see build/ci-build.sh).
 func Run(version, gitHash string) {
 	// Wire up the FindAPK function for device operations
 	device.FindAPKFunc = assets.FindAPK
@@ -83,33 +83,29 @@ func Run(version, gitHash string) {
 	}
 
 	// --- Buttons ---
+	// preCheckedIP is the IP that last passed Pre-Check ("" = none). Like the
+	// other UI state here it is only touched on the Fyne goroutine.
 	var scanBtn, precheckBtn, jailbreakBtn, restoreBtn *widget.Button
-	_ = restoreBtn
-	preCheckPassed := false
+	preCheckedIP := ""
 
 	scanBtn = widget.NewButtonWithIcon("Scan Network", theme.SearchIcon(), func() {
 		scanBtn.Disable()
 		log.Info("Scanning network for Bowflex bikes (port 5555)...")
 		go func() {
 			devices := device.ScanNetwork(log)
-			foundDevices = devices
-			showRestore := false
 			if len(devices) > 0 {
 				log.Dim("Checking device status...")
 				if device.IsJailbroken(devices[0], log) {
-					showRestore = true
 					log.Info("Device is jailbroken -- Restore Stock available")
 				}
 			} else {
 				log.Warn("No devices found. Enter IP manually or check instructions above.")
 			}
 			fyne.Do(func() {
+				foundDevices = devices
 				deviceList.Refresh()
 				if len(devices) > 0 {
 					deviceList.Select(0)
-				}
-				if showRestore {
-					restoreBtn.Show()
 				}
 				scanBtn.Enable()
 			})
@@ -125,16 +121,33 @@ func Run(version, gitHash string) {
 		precheckBtn.Disable()
 		scanBtn.Disable()
 		go func() {
-			passed := device.PreflightCheck(ip, log)
-			preCheckPassed = passed
+			result := device.PreflightCheck(ip, log)
 			fyne.Do(func() {
+				preCheckedIP = ""
+				jailbreakBtn.Disable()
 				precheckBtn.Enable()
 				scanBtn.Enable()
-				if passed {
+				switch result {
+				case device.PreflightPassed:
+					preCheckedIP = ip
 					jailbreakBtn.Enable()
 					log.Success("Pre-check passed! Jailbreak button is now enabled.")
-				} else {
-					jailbreakBtn.Disable()
+				case device.PreflightNeedsOverride:
+					msg := widget.NewLabel(noJRNYOverrideText)
+					msg.Wrapping = fyne.TextWrapWord
+					confirm := dialog.NewCustomConfirm("JRNY is not installed", "Allow jailbreak anyway", "Cancel",
+						container.NewVScroll(msg), func(accepted bool) {
+							if !accepted {
+								log.Dim("Override declined. Jailbreak stays disabled.")
+								return
+							}
+							preCheckedIP = ip
+							jailbreakBtn.Enable()
+							log.Warn("Override accepted: jailbreak allowed without JRNY. Going back to stock needs a factory reset.")
+						}, w)
+					confirm.Resize(fyne.NewSize(460, 360))
+					confirm.Show()
+				default:
 					log.Error("Pre-check FAILED. Copy the output above and send to FreeWheel devs.")
 					log.Warn("Use the copy button (top-right of log) to copy the full output.")
 				}
@@ -148,8 +161,14 @@ func Run(version, gitHash string) {
 			log.Error("No device selected and no IP entered!")
 			return
 		}
-		if !preCheckPassed {
+		if preCheckedIP == "" {
 			log.Error("Run Pre-Check first!")
+			return
+		}
+		if ip != preCheckedIP {
+			log.Error(fmt.Sprintf("Target changed to %s since Pre-Check passed for %s. Run Pre-Check again.", ip, preCheckedIP))
+			preCheckedIP = ""
+			jailbreakBtn.Disable()
 			return
 		}
 		// The user must accept the disclaimer before anything is changed on
@@ -166,14 +185,15 @@ func Run(version, gitHash string) {
 				jailbreakBtn.Disable()
 				precheckBtn.Disable()
 				scanBtn.Disable()
+				restoreBtn.Disable()
 				go func() {
 					device.RunJailbreak(ip, log)
 					fyne.Do(func() {
 						jailbreakBtn.Disable()
-						preCheckPassed = false
+						preCheckedIP = ""
 						precheckBtn.Enable()
 						scanBtn.Enable()
-						restoreBtn.Show()
+						restoreBtn.Enable()
 					})
 				}()
 			}, w)
@@ -196,17 +216,17 @@ func Run(version, gitHash string) {
 		go func() {
 			device.RunRestore(ip, log)
 			fyne.Do(func() {
-				restoreBtn.Hide()
 				restoreBtn.Enable()
 				jailbreakBtn.Disable()
-				preCheckPassed = false
+				preCheckedIP = ""
 				precheckBtn.Enable()
 				scanBtn.Enable()
 			})
 		}()
 	})
+	// Always shown: Restore must be reachable with a typed-in IP when Scan
+	// can't find the bike, and it isn't gated by Pre-Check or the disclaimer.
 	restoreBtn.Importance = widget.DangerImportance
-	restoreBtn.Hide()
 
 	// --- Logo ---
 	logoRes := fyne.NewStaticResource("logo.png", assets.EmbeddedLogo)

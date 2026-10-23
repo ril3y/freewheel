@@ -21,3 +21,16 @@ func TestInstallNeedsUninstall(t *testing.T) {
 		}
 	}
 }
+
+func TestListsPackage(t *testing.T) {
+	out := "package:com.nautilus.bowflex.usb.helper\npackage:com.nautilus.nautiluslauncher\r\n"
+	if listsPackage(out, "com.nautilus.bowflex.usb") {
+		t.Error("substring match counted as installed")
+	}
+	if !listsPackage(out, "com.nautilus.nautiluslauncher") {
+		t.Error("exact match with CRLF not found")
+	}
+	if listsPackage("", "com.nautilus.bowflex.usb") {
+		t.Error("empty output counted as installed")
+	}
+}

@@ -7,9 +7,22 @@ import (
 	"github.com/ril3y/bowflex-tool/internal/adb"
 )
 
+// PreflightResult is the outcome of PreflightCheck.
+type PreflightResult int
+
+const (
+	// PreflightBlocked: incompatible device, or it couldn't be checked.
+	PreflightBlocked PreflightResult = iota
+	// PreflightPassed: compatible, safe to jailbreak.
+	PreflightPassed
+	// PreflightNeedsOverride: compatible Nautilus hardware without JRNY,
+	// e.g. a factory-reset bike that never ran the Nautilus setup. The user
+	// must confirm, because Restore Stock can't reinstall JRNY afterwards.
+	PreflightNeedsOverride
+)
+
 // PreflightCheck queries the device for version info, platform key, and compatibility.
-// Returns true if safe to proceed, false if blocked.
-func PreflightCheck(ip string, log Logger) bool {
+func PreflightCheck(ip string, log Logger) PreflightResult {
 	log.Step("[PRE-FLIGHT] Device compatibility check")
 
 	connect := func() (*adb.Conn, error) {
@@ -20,7 +33,7 @@ func PreflightCheck(ip string, log Logger) bool {
 	conn, err := connect()
 	if err != nil {
 		log.Error(fmt.Sprintf("  Connection failed: %v", err))
-		return false
+		return PreflightBlocked
 	}
 	propsRaw, _ := conn.Shell(
 		"getprop ro.product.model; echo '|||'; " +
@@ -90,7 +103,7 @@ func PreflightCheck(ip string, log Logger) bool {
 	conn, err = connect()
 	if err != nil {
 		log.Error(fmt.Sprintf("  Connection failed: %v", err))
-		return false
+		return PreflightBlocked
 	}
 
 	nautilusPkgs := []struct{ pkg, label string }{
@@ -162,9 +175,18 @@ func PreflightCheck(ip string, log Logger) bool {
 		blocked = true
 	}
 
+	// Without JRNY, only Nautilus firmware is evidence this is a bike.
+	nautilusFirmware := strings.Contains(strings.ToLower(fingerprint), "nautilus") ||
+		strings.HasPrefix(strings.ToUpper(model), "NFTM")
+	missingJRNY := false
 	if jrnyVersion == "not installed" {
-		log.Error("    BLOCKED: JRNY not installed — is this a Bowflex bike?")
-		blocked = true
+		if nautilusFirmware {
+			log.Warn("    JRNY not installed, but this is Nautilus firmware (factory-reset bike?)")
+			missingJRNY = true
+		} else {
+			log.Error("    BLOCKED: JRNY not installed and not Nautilus firmware — is this a Bowflex bike?")
+			blocked = true
+		}
 	} else if jrnyVersion != "" {
 		knownGood := "2.25.1"
 		cmp := compareVersions(jrnyVersion, knownGood)
@@ -193,13 +215,21 @@ func PreflightCheck(ip string, log Logger) bool {
 	if blocked {
 		log.Error("")
 		log.Error("  PRE-FLIGHT FAILED — Jailbreak blocked. Device is not compatible.")
-		return false
+		return PreflightBlocked
+	}
+
+	if missingJRNY {
+		log.Warn("")
+		log.Warn("  PRE-FLIGHT NEEDS CONFIRMATION — hardware is compatible, but JRNY is not installed")
+		log.Warn("  Restore Stock can't reinstall JRNY. Going back to stock would need a factory reset.")
+		log.Info("")
+		return PreflightNeedsOverride
 	}
 
 	log.Success("")
 	log.Success("  PRE-FLIGHT PASSED — Device is compatible")
 	log.Info("")
-	return true
+	return PreflightPassed
 }
 
 // compareVersions compares two dot-separated version strings.

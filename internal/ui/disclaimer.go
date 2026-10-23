@@ -13,3 +13,14 @@ const disclaimerText = "USE AT YOUR OWN RISK.\n\n" +
 
 // disclaimerOneLine is logged at startup.
 const disclaimerOneLine = "USE AT YOUR OWN RISK: unofficial, not affiliated with Bowflex/Nautilus/JRNY; untested on real hardware since v2.1.0. Provided AS IS."
+
+// noJRNYOverrideText is shown when Pre-Check finds compatible Nautilus
+// hardware without JRNY, before the user may jailbreak it anyway.
+const noJRNYOverrideText = "This bike runs Nautilus firmware on compatible hardware, but JRNY " +
+	"and the other Nautilus apps are not installed (usually because the bike was " +
+	"factory reset and never finished the Nautilus setup).\n\n" +
+	"FreeWheel can still jailbreak it, but Restore Stock cannot bring JRNY back " +
+	"afterwards: it only re-enables apps that are already on the bike. To go back " +
+	"to stock you would need to factory reset the bike and run the Nautilus setup, " +
+	"which may update the firmware.\n\n" +
+	"Allow the jailbreak anyway?"
