@@ -9,13 +9,17 @@ import (
 	"github.com/ril3y/bowflex-tool/internal/adb"
 )
 
-// ScanNetwork probes all /24 subnets on local interfaces for ADB devices.
-func ScanNetwork(log Logger) []string {
+// ScanNetwork probes the given /24 subnets ("a.b.c" prefixes) for ADB
+// devices. With none given it scans the /24 of each local interface, which
+// misses a bike on another VLAN; pass that subnet explicitly instead.
+func ScanNetwork(log Logger, subnets ...string) []string {
 	var results []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	subnets := getLocalSubnets()
+	if len(subnets) == 0 {
+		subnets = getLocalSubnets()
+	}
 	if len(subnets) == 0 {
 		log.Info("Could not determine local network. Trying 192.168.1.0/24")
 		subnets = []string{"192.168.1"}
@@ -50,6 +54,26 @@ func IsJailbroken(ip string, log Logger) bool {
 	out, _ := conn.Shell("pm list packages 2>/dev/null | grep -E 'freewheel.launcher|freewheel.bridge'")
 	conn.Close()
 	return strings.Contains(out, "freewheel.launcher") || strings.Contains(out, "freewheel.bridge")
+}
+
+// ParseSubnet accepts a /24 network written as "192.168.10", "192.168.10.0"
+// or "192.168.10.0/24" and returns its "a.b.c" prefix. A host address such as
+// "192.168.10.5" is not a subnet.
+func ParseSubnet(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "/24")
+	parts := strings.Split(s, ".")
+	switch {
+	case len(parts) == 4 && parts[3] == "0":
+		parts = parts[:3]
+	case len(parts) != 3:
+		return "", false
+	}
+	prefix := strings.Join(parts, ".")
+	if ip := net.ParseIP(prefix + ".0").To4(); ip == nil {
+		return "", false
+	}
+	return prefix, true
 }
 
 func getLocalSubnets() []string {

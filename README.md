@@ -82,6 +82,7 @@ Open FreeWheel, click **Scan Network** (or enter the IP), then click **Restore S
 - Make sure your PC and bike are on the same WiFi network
 - Make sure the Utility App is running on the bike
 - Try entering the bike's IP address manually (check your router's connected devices)
+- Bike on a different subnet or VLAN (e.g. an IoT network)? Scan only covers the PC's own networks. Type that subnet in the IP box (e.g. `192.168.10.0`) and click **Scan Network**, and make sure your firewall lets the PC reach the bike on TCP port 5555
 
 **"Pre-Check failed"?**
 - Only Velocore C9/C10 bikes are supported (Android 9, Rockchip board)

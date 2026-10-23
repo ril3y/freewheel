@@ -68,7 +68,7 @@ func Run(version, gitHash string) {
 
 	// --- Manual IP entry ---
 	ipEntry := widget.NewEntry()
-	ipEntry.SetPlaceHolder("192.168.1.xxx")
+	ipEntry.SetPlaceHolder("Bike IP, or a subnet like 192.168.10.0 to scan")
 
 	// --- Helper: resolve target IP ---
 	getIP := func() string {
@@ -88,10 +88,16 @@ func Run(version, gitHash string) {
 	preCheckPassed := false
 
 	scanBtn = widget.NewButtonWithIcon("Scan Network", theme.SearchIcon(), func() {
+		// A subnet typed in the IP box (e.g. an IoT VLAN the PC has no
+		// address on) is scanned instead of the PC's own networks.
+		var subnets []string
+		if subnet, ok := device.ParseSubnet(ipEntry.Text); ok {
+			subnets = []string{subnet}
+		}
 		scanBtn.Disable()
 		log.Info("Scanning network for Bowflex bikes (port 5555)...")
 		go func() {
-			devices := device.ScanNetwork(log)
+			devices := device.ScanNetwork(log, subnets...)
 			foundDevices = devices
 			showRestore := false
 			if len(devices) > 0 {
@@ -106,6 +112,10 @@ func Run(version, gitHash string) {
 			fyne.Do(func() {
 				deviceList.Refresh()
 				if len(devices) > 0 {
+					// Clear a scanned subnet so the selected bike is the target.
+					if _, ok := device.ParseSubnet(ipEntry.Text); ok {
+						ipEntry.SetText("")
+					}
 					deviceList.Select(0)
 				}
 				if showRestore {
