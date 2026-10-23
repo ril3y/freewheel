@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -390,75 +389,6 @@ func (ac *Conn) Push(localPath, remotePath string, mode uint32) error {
 	}
 
 	ac.sendMsg(cmdCLSE, localID, remoteID, nil)
-	return nil
-}
-
-// Pull downloads a file from the device.
-func (ac *Conn) Pull(remotePath, localPath string) error {
-	localID := ac.nextID()
-
-	if err := ac.sendMsg(cmdOPEN, localID, 0, []byte("sync:\x00")); err != nil {
-		return err
-	}
-
-	remoteID, err := ac.waitOkay(localID)
-	if err != nil {
-		return fmt.Errorf("sync open failed: %w", err)
-	}
-
-	recvHeader := make([]byte, 8)
-	copy(recvHeader[0:4], "RECV")
-	binary.LittleEndian.PutUint32(recvHeader[4:8], uint32(len(remotePath)))
-	recvPayload := append(recvHeader, []byte(remotePath)...)
-
-	if err := ac.sendMsg(cmdWRTE, localID, remoteID, recvPayload); err != nil {
-		return err
-	}
-	if _, err := ac.waitOkay(localID); err != nil {
-		return fmt.Errorf("RECV ack failed: %w", err)
-	}
-
-	var buf bytes.Buffer
-	for {
-		msg, data, err := ac.readMsg()
-		if err != nil {
-			return err
-		}
-		if msg.Command == cmdWRTE && len(data) >= 8 {
-			ac.sendMsg(cmdOKAY, localID, remoteID, nil)
-			tag := string(data[0:4])
-			if tag == "DATA" {
-				dataLen := binary.LittleEndian.Uint32(data[4:8])
-				buf.Write(data[8 : 8+dataLen])
-			} else if tag == "DONE" {
-				break
-			} else if tag == "FAIL" {
-				failLen := binary.LittleEndian.Uint32(data[4:8])
-				return fmt.Errorf("pull failed: %s", string(data[8:8+failLen]))
-			}
-		} else if msg.Command == cmdCLSE {
-			break
-		}
-	}
-
-	ac.sendMsg(cmdCLSE, localID, remoteID, nil)
-	return os.WriteFile(localPath, buf.Bytes(), 0644)
-}
-
-// Install pushes an APK to /data/local/tmp and runs pm install.
-func (ac *Conn) Install(localPath string) error {
-	tmpPath := "/data/local/tmp/_install.apk"
-	if err := ac.Push(localPath, tmpPath, 0644); err != nil {
-		return fmt.Errorf("push APK: %w", err)
-	}
-	out, err := ac.Shell("pm install -r " + tmpPath)
-	if err != nil {
-		return fmt.Errorf("pm install: %w", err)
-	}
-	if !strings.Contains(out, "Success") {
-		return fmt.Errorf("install failed: %s", strings.TrimSpace(out))
-	}
-	ac.Shell("rm " + tmpPath)
 	return nil
 }
 

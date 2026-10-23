@@ -53,20 +53,11 @@ func PreflightCheck(ip string, log Logger) bool {
 	chipset := getProp(8)
 	soc := getProp(9)
 
-	// Normalize Android version from SDK level
-	if sdkVer == "28" || sdkVer == "9" {
-		if sdkVer == "28" {
-			androidVer = "9"
-		}
-	} else if secPatch == "9" || secPatch == "28" {
+	// SDK 28 is Android 9, whatever ro.build.version.release says
+	var sdkInt int
+	fmt.Sscanf(sdkVer, "%d", &sdkInt)
+	if sdkInt == 28 {
 		androidVer = "9"
-	}
-	if androidVer != "9" {
-		var sdkInt int
-		fmt.Sscanf(sdkVer, "%d", &sdkInt)
-		if sdkInt == 28 {
-			androidVer = "9"
-		}
 	}
 
 	// Board fallback: use ro.hardware or ro.board.platform if board is empty
@@ -135,8 +126,9 @@ func PreflightCheck(ip string, log Logger) bool {
 	}
 
 	// --- Platform signing key ---
+	// It can't be read over ADB beforehand; Android checks it when the
+	// platform-signed SerialBridge installs.
 	log.Info("  Platform Key:")
-	keyMatch := false
 	log.Dim("    Platform key will be verified when SerialBridge installs")
 	log.Dim("    (SerialBridge is platform-signed — install fails if key doesn't match)")
 
@@ -183,12 +175,8 @@ func PreflightCheck(ip string, log Logger) bool {
 		log.Dim("    NautilusLauncher not installed (not needed — SerialBridge handles serial)")
 	}
 
-	if keyMatch {
-		log.Success("    Platform key verified — SerialBridge will run as system")
-	} else {
-		log.Warn("    Platform key could not be verified pre-install")
-		log.Dim("    If SerialBridge install fails, the key doesn't match and jailbreak is not possible")
-	}
+	log.Warn("    Platform key could not be verified pre-install")
+	log.Dim("    If SerialBridge install fails, the key doesn't match and jailbreak is not possible")
 
 	if blocked {
 		log.Error("")
