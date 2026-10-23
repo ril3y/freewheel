@@ -20,6 +20,14 @@ func RunRestore(ip string, log Logger) {
 		return adb.Connect(ip, 5555, log.Warn)
 	}
 
+	// skipped lists steps that couldn't run because the bike was unreachable,
+	// so the summary never claims a restore that didn't happen.
+	var skipped []string
+	skip := func(what string, err error) {
+		log.Error(fmt.Sprintf("  Connection failed, skipped: %v", err))
+		skipped = append(skipped, what)
+	}
+
 	// --- Step 1: Connect ---
 	step(1, "Connecting to bike")
 	conn, err := connect()
@@ -84,6 +92,8 @@ func RunRestore(ip string, log Logger) {
 		conn.Shell("rm /sdcard/Download/MiscSettings/asset_manager_disabled 2>/dev/null")
 		conn.Close()
 		log.Success("  Stock packages and settings restored")
+	} else {
+		skip("restore stock packages and settings", err)
 	}
 
 	// --- Step 4: Remove VeloLauncher and re-enable stock launchers ---
@@ -104,6 +114,8 @@ func RunRestore(ip string, log Logger) {
 		} else {
 			log.Dim("  VeloLauncher not installed")
 		}
+	} else {
+		skip("remove VeloLauncher", err)
 	}
 
 	// --- Step 5: Clean factory_reset directory ---
@@ -126,6 +138,8 @@ func RunRestore(ip string, log Logger) {
 		} else {
 			log.Warn(fmt.Sprintf("  factory_reset dir has %d APKs -- should be exactly 1", apkCount))
 		}
+	} else {
+		skip("clean factory_reset directory", err)
 	}
 
 	// --- Step 6: Finalize stock configuration ---
@@ -148,6 +162,8 @@ func RunRestore(ip string, log Logger) {
 		conn.Shell("settings delete global auto_update 2>/dev/null")
 		conn.Close()
 		log.Success("  OTA re-enabled, Google services kept enabled (WiFi/BT), WebView enabled")
+	} else {
+		skip("re-enable OTA and Google services", err)
 	}
 
 	// --- Step 7: Restart Nautilus apps ---
@@ -160,17 +176,25 @@ func RunRestore(ip string, log Logger) {
 		conn.Shell("pm enable com.nautilus.bowflex.usb 2>/dev/null")
 		conn.Shell("am start -n com.nautilus.nautiluslauncher/.MainActivity")
 		conn.Close()
+		time.Sleep(2 * time.Second)
+		conn, err = connect()
 	}
-	time.Sleep(2 * time.Second)
-	conn, err = connect()
 	if err == nil {
 		conn.Shell("am start -n com.nautilus.bowflex.usb/com.nautilus.bowflex.usb.ui.activity.splash.SplashActivity")
 		conn.Close()
 		log.Success("  NautilusLauncher and JRNY restarted")
+	} else {
+		skip("restart Nautilus apps", err)
 	}
 
 	// Final summary
 	log.Step("")
+	if len(skipped) > 0 {
+		log.Error("=== RESTORE INCOMPLETE ===")
+		log.Error(fmt.Sprintf("  Could not reach the bike to: %s", strings.Join(skipped, ", ")))
+		log.Warn("  Make sure the bike is on WiFi, then run Restore Stock again.")
+		return
+	}
 	log.Success("=== STOCK RESTORED ===")
 	log.Info("")
 	log.Dim("  - SerialBridge and VeloLauncher uninstalled")

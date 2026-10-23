@@ -10,9 +10,10 @@ import (
 	"github.com/ril3y/bowflex-tool/internal/adb"
 )
 
-// FindAPKFunc is the function signature for locating APKs.
-// Set by the caller to avoid circular dependency with assets package.
-var FindAPKFunc func(name string) string
+// FindAPKFunc locates an APK by name and reports whether it is a local
+// override rather than the embedded copy. Set by the caller to avoid a
+// circular dependency with the assets package.
+var FindAPKFunc func(name string) (path string, override bool)
 
 // RunJailbreak executes the full jailbreak sequence on the device.
 func RunJailbreak(ip string, log Logger) {
@@ -32,12 +33,16 @@ func RunJailbreak(ip string, log Logger) {
 	// the v1.4.0 debug-signed launcher, or a newer version already
 	// installed), so a dropped connection never leaves the app missing.
 	installAPK := func(name, pkg string) bool {
-		apkPath := FindAPKFunc(name)
+		apkPath, override := FindAPKFunc(name)
 		if apkPath == "" {
 			log.Error(fmt.Sprintf("  %s.apk not found!", name))
 			return false
 		}
-		log.Dim(fmt.Sprintf("  Using: %s", apkPath))
+		if override {
+			log.Warn(fmt.Sprintf("  Using LOCAL OVERRIDE (FREEWHEEL_APK_DIR): %s", apkPath))
+		} else {
+			log.Dim(fmt.Sprintf("  Using: %s", apkPath))
+		}
 
 		// Push APK
 		conn, err := connect()
@@ -61,7 +66,10 @@ func RunJailbreak(ip string, log Logger) {
 			}
 			defer conn.Close()
 			conn.Shell(fmt.Sprintf("am force-stop %s 2>/dev/null", pkg))
-			out, _ := conn.Shell(fmt.Sprintf("pm install -r %s 2>&1", tmpPath))
+			out, err := conn.Shell(fmt.Sprintf("pm install -r %s 2>&1", tmpPath))
+			if err != nil && !strings.Contains(out, "Success") {
+				out = strings.TrimSpace(out + fmt.Sprintf("\n(%v)", err))
+			}
 			return out, true
 		}
 
@@ -127,16 +135,25 @@ func RunJailbreak(ip string, log Logger) {
 	log.Success(fmt.Sprintf("  %s", idStr))
 	conn.Close()
 
-	// Check if already jailbroken — if so, this is an update, not a fresh jailbreak
+	// Check if already jailbroken — if so, this is an update, not a fresh
+	// jailbreak. If this can't be checked, stop before changing anything:
+	// guessing "fresh" would auto-restore a working jailbroken bike on failure.
 	conn, err = connect()
-	isUpdate := false
-	if err == nil {
-		pkgCheck, _ := conn.Shell("pm list packages 2>/dev/null | grep -E 'freewheel.launcher|freewheel.bridge'")
-		conn.Close()
-		isUpdate = strings.Contains(pkgCheck, "freewheel.launcher")
-		if isUpdate {
-			log.Info("  Already jailbroken — running as UPDATE (will reinstall APKs)")
-		}
+	if err != nil {
+		log.Error(fmt.Sprintf("  Could not check whether the bike is already jailbroken: %v", err))
+		log.Warn("  Nothing was changed. Run Jailbreak again.")
+		return
+	}
+	pkgCheck, err := conn.Shell("pm list packages 2>/dev/null | grep -E 'freewheel.launcher|freewheel.bridge'")
+	conn.Close()
+	if err != nil {
+		log.Error(fmt.Sprintf("  Could not check whether the bike is already jailbroken: %v", err))
+		log.Warn("  Nothing was changed. Run Jailbreak again.")
+		return
+	}
+	isUpdate := strings.Contains(pkgCheck, "freewheel.launcher")
+	if isUpdate {
+		log.Info("  Already jailbroken — running as UPDATE (will reinstall APKs)")
 	}
 
 	// If anything fails on a fresh jailbreak, auto-restore to stock.
@@ -161,6 +178,9 @@ func RunJailbreak(ip string, log Logger) {
 		log.Error(msg)
 		failed = true
 	}
+
+	// skipped lists non-critical steps that couldn't run, for the summary.
+	var skipped []string
 
 	// --- Step 3: Disable JRNY + AppMonitor ---
 	step(3, "Disabling JRNY and AppMonitor")
@@ -221,6 +241,7 @@ func RunJailbreak(ip string, log Logger) {
 	if err != nil {
 		log.Warn(fmt.Sprintf("  Could not reconnect to start SerialBridge: %v", err))
 		log.Warn("  VeloLauncher starts it on next boot; reboot the bike after jailbreak if sensors stay at zero.")
+		skipped = append(skipped, "start SerialBridge")
 	} else {
 		conn.Shell("am start-foreground-service -n io.freewheel.bridge/.BridgeService 2>/dev/null")
 		conn.Close()
@@ -242,6 +263,7 @@ func RunJailbreak(ip string, log Logger) {
 	if err != nil {
 		log.Warn(fmt.Sprintf("  Could not reconnect to set home screen and permissions: %v", err))
 		log.Warn("  Run Jailbreak again (it will update in place) to finish this step.")
+		skipped = append(skipped, "set home screen and permissions")
 	} else {
 		conn.Shell("cmd package set-home-activity io.freewheel.launcher/.MainActivity")
 		conn.Shell("pm disable-user --user 0 com.android.launcher3 2>/dev/null")
@@ -291,6 +313,10 @@ func RunJailbreak(ip string, log Logger) {
 		conn.Shell("settings put global stay_on_while_plugged_in 3")
 		log.Dim("  Navbar enabled, screen stays on while plugged in")
 		conn.Close()
+	} else {
+		log.Warn(fmt.Sprintf("  Could not reconnect to apply system settings: %v", err))
+		log.Warn("  Navbar and screen-on settings were not applied. Run Jailbreak again (it updates in place) to finish this step.")
+		skipped = append(skipped, "apply system settings")
 	}
 
 	// --- Step 8: ADB persistence ---
@@ -299,6 +325,7 @@ func RunJailbreak(ip string, log Logger) {
 	conn, err = connect()
 	if err != nil {
 		log.Warn(fmt.Sprintf("  Could not reconnect to set ADB persistence: %v", err))
+		skipped = append(skipped, "keep ADB over WiFi enabled")
 	} else {
 		conn.Shell("setprop persist.sys.usb.config adb")
 		conn.Shell("setprop persist.adb.tcp.port 5555")
@@ -315,13 +342,21 @@ func RunJailbreak(ip string, log Logger) {
 		conn.Shell("input keyevent KEYCODE_HOME")
 		conn.Close()
 		log.Success("  Home screen active")
+	} else {
+		log.Warn(fmt.Sprintf("  Could not reconnect to show the home screen: %v", err))
 	}
 
 	checkBridgeHealth(connect, log)
 
 	// Final summary
 	log.Step("")
-	log.Success("=== JAILBREAK COMPLETE ===")
+	if len(skipped) > 0 {
+		log.Warn("=== JAILBREAK COMPLETE, WITH SKIPPED STEPS ===")
+		log.Warn(fmt.Sprintf("  Lost the connection during: %s", strings.Join(skipped, ", ")))
+		log.Warn("  Run Jailbreak again (it updates in place) to finish them. Intended result:")
+	} else {
+		log.Success("=== JAILBREAK COMPLETE ===")
+	}
 	log.Info("")
 	log.Dim("  SerialBridge owns the bike serial port, serves TCP:9999 (NautilusLauncher disabled)")
 	log.Dim("  VeloLauncher set as home screen (free, no subscription)")

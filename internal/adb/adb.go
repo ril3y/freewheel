@@ -34,6 +34,11 @@ const (
 	authToken  = 1
 	authSig    = 2
 	authRSAKey = 3
+
+	// readTimeout bounds the wait for each message from the device.
+	readTimeout = 30 * time.Second
+	// authPromptTimeout is how long the user gets to tap Allow on the bike.
+	authPromptTimeout = 60 * time.Second
 )
 
 type adbMessage struct {
@@ -47,8 +52,9 @@ type adbMessage struct {
 
 // Conn represents a direct connection to a device's adbd.
 type Conn struct {
-	conn    net.Conn
-	localID uint32
+	conn        net.Conn
+	localID     uint32
+	readTimeout time.Duration
 }
 
 // Cached RSA key
@@ -155,14 +161,13 @@ func Connect(host string, port int, logFn ...func(string)) (*Conn, error) {
 			logFn[0](msg)
 		}
 	}
-	_ = logMsg
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("TCP connect failed: %w", err)
 	}
 
-	ac := &Conn{conn: conn, localID: 1}
+	ac := &Conn{conn: conn, localID: 1, readTimeout: readTimeout}
 
 	// Send CNXN
 	banner := "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dry_run_send,openscreen_mdns,push_sync"
@@ -184,7 +189,7 @@ func Connect(host string, port int, logFn ...func(string)) (*Conn, error) {
 
 		switch msg.Command {
 		case cmdCNXN:
-			_ = data
+			ac.readTimeout = readTimeout
 			return ac, nil
 
 		case cmdAUTH:
@@ -201,13 +206,12 @@ func Connect(host string, port int, logFn ...func(string)) (*Conn, error) {
 						conn.Close()
 						return nil, fmt.Errorf("send auth signature failed: %w", err)
 					}
-					msg2, data2, err := ac.readMsg()
+					msg2, _, err := ac.readMsg()
 					if err != nil {
 						conn.Close()
 						return nil, fmt.Errorf("auth response failed: %w", err)
 					}
 					if msg2.Command == cmdCNXN {
-						_ = data2
 						return ac, nil
 					}
 					if msg2.Command == cmdAUTH {
@@ -221,7 +225,7 @@ func Connect(host string, port int, logFn ...func(string)) (*Conn, error) {
 							logMsg("Tap ALLOW on the bike (check 'Always allow' box)")
 							authMessageShown = true
 						}
-						conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+						ac.readTimeout = authPromptTimeout
 						continue
 					}
 				}
@@ -278,7 +282,8 @@ func (ac *Conn) Close() {
 	}
 }
 
-// Shell runs a command and returns output.
+// Shell runs a command and returns output. If the stream breaks before the
+// device closes it (e.g. a timeout), it returns the partial output and an error.
 func (ac *Conn) Shell(cmd string) (string, error) {
 	localID := ac.nextID()
 	dest := "shell:" + cmd + "\x00"
@@ -296,7 +301,7 @@ func (ac *Conn) Shell(cmd string) (string, error) {
 	for {
 		msg, data, err := ac.readMsg()
 		if err != nil {
-			break
+			return buf.String(), fmt.Errorf("shell read: %w", err)
 		}
 		switch msg.Command {
 		case cmdWRTE:
@@ -306,7 +311,6 @@ func (ac *Conn) Shell(cmd string) (string, error) {
 			return buf.String(), nil
 		}
 	}
-	return buf.String(), nil
 }
 
 // Push sends a file to the device.
@@ -383,8 +387,10 @@ func (ac *Conn) Push(localPath, remotePath string, mode uint32) error {
 			ac.sendMsg(cmdCLSE, localID, remoteID, nil)
 			return nil
 		} else if status == "FAIL" && len(respData) >= 8 {
-			failLen := binary.LittleEndian.Uint32(respData[4:8])
-			failMsg := string(respData[8 : 8+failLen])
+			failMsg := respData[8:]
+			if failLen := binary.LittleEndian.Uint32(respData[4:8]); uint64(failLen) < uint64(len(failMsg)) {
+				failMsg = failMsg[:failLen]
+			}
 			return fmt.Errorf("push failed: %s", failMsg)
 		}
 	}
@@ -486,7 +492,7 @@ func (ac *Conn) sendMsg(cmd, arg0, arg1 uint32, data []byte) error {
 
 func (ac *Conn) readMsg() (adbMessage, []byte, error) {
 	var msg adbMessage
-	ac.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	ac.conn.SetReadDeadline(time.Now().Add(ac.readTimeout))
 	if err := binary.Read(ac.conn, binary.LittleEndian, &msg); err != nil {
 		return msg, nil, err
 	}
